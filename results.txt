@@ -1,4 +1,14 @@
-#########Examples######## is not reachable
- is not reachable
-https://google.com is reachable
-https://youtube.com is reachable
+Teste URL: google.com
+DNS-Lookup erfolgreich!
+Website ist erreichbar!
+Verbindungszeit: 0.09987735748291016 Sekunden
+Website-Ladegeschwindigkeit in Ordnung.
+Keyword nicht gefunden!
+
+Teste URL: youtube.com
+DNS-Lookup erfolgreich!
+Website ist erreichbar!
+Verbindungszeit: 0.0810847282409668 Sekunden
+Website-Ladegeschwindigkeit in Ordnung.
+Keyword nicht gefunden!
+
