@@ -3,7 +3,7 @@ import socket
 import time
 
 # Dateiname der Textdatei mit den URLs und Keywords
-url_file = "urls.txt"
+url_file = "test.txt"
 results_file = "results.txt"
 
 # Timeout und Liste der URLs
