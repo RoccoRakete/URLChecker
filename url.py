@@ -4,15 +4,16 @@ import os
 import re
 import sys
 import warnings
+from enum import Enum
 from typing import List, Optional, Union
 
+import httpx as httpx
 import pydantic as pydantic
-import requests
 import socket
 import time
 
+from httpx import ConnectTimeout, ReadTimeout, ConnectError
 from pydantic.json import pydantic_encoder
-from requests import ConnectTimeout, ReadTimeout
 
 # Dateiname der Textdatei mit den URLs und Keywords
 url_file = "urls.txt"
@@ -24,22 +25,44 @@ def getDomain(givenURL: str) -> Union[str, None]:
     return re.search('(?i)https?://([^/]+).*', givenURL).group(1)
 
 
+def isDomain(string: str):
+    if str is None:
+        return False
+    elif re.search(r'^(?!-)[A-Za-z0-9-]+([-.][a-z0-9]+)*\\.[A-Za-z]{2,6}$', string):
+        return True
+    else:
+        return False
+
+
+class ProblemType(Enum):
+    NO_DNS_RECORD = 0
+    CONNECT_TIMEOUT = 1
+    READ_TIMEOUT = 2
+    BLOCKED_BY = 3
+    PARKED_DOMAIN = 4
+    NO_MARKER_MATCH = 5
+    MISC = 6
+    WTF = 7
+
+
 class DomainCheckResult(pydantic.BaseModel):
     # TODO: Add validation for domain / url
     domain: str
+    wasChecked: bool = False
+    problemType: Optional[ProblemType]
     responsecode: Optional[int]
     ip_address: Optional[str]
-    isTimeout: Optional[bool]
     connectMillis: Optional[float]
-    isBlockedBy: Optional[int]
-    isParked: Optional[bool]
+    blockedBy: Optional[str]
     # parkedType: Optional[int]
     isMarkerFound: Optional[bool]
-    redirectedTo: Optional[str]
+    redirectedToDomain: Optional[str]
     preferredProtocol: Optional[str]
 
-    def isOnline(self) -> bool:
-        if not self.isTimeout and self.ip_address is not None:
+    def isOnline(self) -> Union[bool, None]:
+        if self.wasChecked is None:
+            return None
+        elif self.problemType is None:
             return True
         else:
             return False
@@ -52,12 +75,24 @@ class DomainCheckResult(pydantic.BaseModel):
             return None
 
     def getFailureReasonStr(self) -> Union[str, None]:
-        if self.ip_address is None:
-            return 'NO_DNS_RECORD'
-        elif self.isTimeout:
-            return 'TIMEOUT'
-        elif self.isParked:
-            return 'PARKED'
+        problemType = self.problemType
+        if problemType is not None:
+            if problemType == ProblemType.BLOCKED_BY:
+                return f'{self.problemType.name} -> {self.blockedBy}'
+            else:
+                return problemType.name
+        else:
+            return None
+
+    def getAdditionalFailureReasonStr(self) -> Union[str, None]:
+        # TODO: Add more functionality
+        str = ''
+        if self.redirectedToDomain is not None:
+            str += f'REDIRECT: {self.redirectedToDomain}'
+        if self.blockedBy is not None:
+            str += f' | BLOCKED_BY: {self.blockedBy}'
+        if len(str) > 0:
+            return str
         else:
             return None
 
@@ -72,10 +107,7 @@ class DomainCheckInfo(pydantic.BaseModel):
     checkResults: List[DomainCheckResult] = []
 
     def __str__(self):
-        if self.isOnline() is True:
-            return f'{self.domains[0]} | {self.getOnlineStatus()}'
-        else:
-            return f'{self.domains[0]} | {self.getOnlineStatus()} | {self.getFailureReasonStr()}'
+        return f'{self.domains[0]} | {self.getStatusText()}'
 
     def getURL(self) -> str:
         return self.url
@@ -95,14 +127,14 @@ class DomainCheckInfo(pydantic.BaseModel):
             # Some offline some unchecked -> Unclear status
             return None
 
-    def getOnlineStatus(self) -> str:
+    def getStatusText(self) -> str:
         onlinestatus: Union[bool, None] = self.isOnline()
         if onlinestatus is None:
-            return 'UNCHECKABLE'
+            return f'UNCHECKABLE -> {self.getFailureReasonStr()}'
         elif onlinestatus is True:
             return 'ONLINE'
         else:
-            return 'OFFLINE'
+            return f'OFFLINE -> {self.getFailureReasonStr()}'
 
     def getFailureReasonStr(self) -> Union[str, None]:
         for checkResult in self.checkResults:
@@ -123,48 +155,81 @@ class URLChecker:
     #     pass
 
     def checkURL(self, domainCheckInfo: DomainCheckInfo):
+        # mainDomain = domainCheckInfo.domains[0]
         for domain in domainCheckInfo.domains:
             domainCheckResult = DomainCheckResult(domain=domain)
-            domainCheckInfo.checkResults.append(domainCheckResult)
-            # Add checkResult so whatever happens we will have a result in our list
-            # TODO: Add this via finally block to make it more reliable - we dont want to have this if e.g. this script gets killed in the middle
-
-            # DNS-Lookup testen
             try:
-                ip_address = socket.gethostbyname(domain)
-                domainCheckResult.ip_address = ip_address
-            except socket.gaierror:
-                # DNS Lookup failed -> No need to do further tests
-                continue
+                # Add checkResult so whatever happens we will have a result in our list
+                # TODO: Add this via finally block to make it more reliable - we dont want to have this if e.g. this script gets killed in the middle
 
-            # Verbindungszeit testen
-            start_time = time.time()
-            try:
-                # verify=False -> Ignore certificate warnings
-                response = requests.get("https://" + domain, timeout=self.timeout, verify=False)
-            except ConnectTimeout:
-                domainCheckResult.isTimeout = True
-                continue
-            except ReadTimeout:
-                domainCheckResult.isTimeout = True
-                continue
-            domainCheckResult.responsecode = response.status_code
-            end_time = time.time()
-            time_taken = end_time - start_time
-            # if time_taken > self.timeout:
-            #     domainCheckResult.isTimeout = True
-            # else:
-            #     domainCheckResult.isTimeout = False
-            domainCheckResult.connectMillis = time_taken
+                # DNS-Lookup testen
+                try:
+                    ip_address = socket.gethostbyname(domain)
+                    domainCheckResult.ip_address = ip_address
+                except socket.gaierror:
+                    # DNS Lookup failed -> No need to do further tests
+                    domainCheckResult.problemType = ProblemType.NO_DNS_RECORD
+                    continue
+
+                # Verbindungszeit testen
+                start_time = time.time()
+                try:
+                    # verify=False -> Ignore certificate warnings
+                    req = httpx.get("https://" + domain, timeout=self.timeout, verify=False, follow_redirects=True)
+                except ConnectTimeout:
+                    domainCheckResult.problemType = ProblemType.CONNECT_TIMEOUT
+                    continue
+                except ReadTimeout:
+                    domainCheckResult.problemType = ProblemType.READ_TIMEOUT
+                    continue
+                except ConnectError:
+                    domainCheckResult.problemType = ProblemType.WTF
+                    continue
+                html = req.text
+                domainCheckResult.responsecode = req.status_code
+                end_time = time.time()
+                time_taken = end_time - start_time
+                # if time_taken > self.timeout:
+                #     domainCheckResult.isTimeout = True
+                # else:
+                #     domainCheckResult.isTimeout = False
+                domainCheckResult.connectMillis = time_taken
+                currentDomain = req.url.host
+                if currentDomain != domain:
+                    domainCheckResult.redirectedToDomain = currentDomain
+                blockedBy = self.getBlockedBy(req)
+                if blockedBy is not None:
+                    domainCheckResult.problemType = ProblemType.BLOCKED_BY
+                    domainCheckResult.blockedBy = blockedBy
+                elif self.looksLikeParkedDomain(html):
+                    domainCheckResult.problemType = ProblemType.PARKED_DOMAIN
+
+                # TODO: Check for Cloudflare and similar
+            finally:
+                domainCheckResult.wasChecked = True
+                domainCheckInfo.checkResults.append(domainCheckResult)
             # TODO: Check all domains
             break
 
     def looksLikeParkedDomain(self, html: str):
-        # TODO: Add detection of parked domains
-        if 'todo' in html:
+        # TODO: Add better detection of parked domains
+        if 'sedoparking.com' in html or 'sedoParkingUrl' in html:
+            return True
+        elif 'window.park' in html and '/js/parking' in html:
             return True
         else:
             return False
+
+    def getBlockedBy(self, req) -> Union[str, None]:
+        """ Detect DNS blocks and blocks by e.g. Cloudflare. """
+        server = req.headers.get('Server')
+        html = req.text
+        if req.status_code == 403 and server is not None and 'cloudflare' in server and 'cf-error' in html:
+            return 'Cloudflare'
+        elif req.status_code == 403 and server is not None and 'ddos-guard' in server and 'link=\"https://ddos-guard.net/' in html:
+            return 'DDoS-Guard'
+        else:
+            return None
 
 
 if __name__ == '__main__':
@@ -186,12 +251,17 @@ if __name__ == '__main__':
             line = line.strip()
             if line == "":
                 continue
+            keywords = []
             if ' ' in line:
                 url, keyword = line.split(" ", 1)  # die erste Leerzeichen-getrennte Zeichenkette als URL, den Rest als Keyword nehmen
-                dsi = DomainCheckInfo(url=url, domains=[getDomain(url)], keywords=[keyword])
+                keywords = [keyword]
             else:
                 url = line
-                dsi = DomainCheckInfo(url=url, domains=[getDomain(url)])
+            domain = getDomain(url)
+            if domain is None:
+                print(f'Skipping line due to invalid domain: {domain}')
+                continue
+            dsi = DomainCheckInfo(url=url, domains=[domain], keywords=keywords)
             itemsToCheck.append(dsi)
     if len(itemsToCheck) == 0:
         print("Keine Domains zum prüfen gefunden -> Ende")
@@ -202,6 +272,7 @@ if __name__ == '__main__':
         for dsi in itemsToCheck:
             print(f"Arbeite an item {pos + 1} von {len(itemsToCheck)} | {dsi.url}")
             checker.checkURL(dsi)
+            print(f"--> {dsi.getStatusText()}")
             text = ''
             if pos > 0:
                 text += '\n'
