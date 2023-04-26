@@ -21,8 +21,11 @@ results_file = "results.txt"
 
 
 def getDomain(givenURL: str) -> Union[str, None]:
-    """ Returns url without protocol. """
-    return re.search('(?i)https?://([^/]+).*', givenURL).group(1)
+    match = re.search('^(?:https?:\/\/)?(?:[^@\n]+@)?(?:www\.)?([^:\/\n]+)', givenURL)
+    if match:
+        return match.group(1)
+    else:
+        return None  # oder eine Fehlermeldung
 
 
 def isDomain(string: str):
