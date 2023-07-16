@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import warnings
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Union
 
@@ -39,19 +40,22 @@ def isDomain(string: str) -> bool:
 class ProblemType(Enum):
     NO_DNS_RECORD = 0
     CONNECT_TIMEOUT = 1
-    READ_TIMEOUT = 2
-    BLOCKED_BY = 3
-    PARKED_DOMAIN = 4
-    NO_MARKER_MATCH = 5
-    MISC = 6
-    WTF = 7
+    CONNECT_ERROR = 2
+    READ_TIMEOUT = 3
+    BLOCKED_BY = 4
+    PARKED_DOMAIN = 5
+    NO_MARKER_MATCH = 6
+    MISC = 7
+    # Placeholder
+    WTF = 8
 
 
 class DomainCheckResult(pydantic.BaseModel):
     # TODO: Add validation for domain / url
     domain: str
-    wasChecked: bool = False
+    dateChecked: Optional[datetime]
     problemType: Optional[ProblemType]
+    problemTypeStr: Optional[Union[str, None]]
     responsecode: Optional[int]
     ip_address: Optional[str]
     connectMillis: Optional[float]
@@ -91,7 +95,6 @@ class DomainCheckResult(pydantic.BaseModel):
 class DomainCheckInfo(pydantic.BaseModel):
     url: str
     domains: List[str]
-    seconds_taken: Optional[int]
     keywords: Optional[List[str]]
     regexes: Optional[List[str]]
     status: Optional[int]
@@ -104,6 +107,7 @@ class DomainCheckInfo(pydantic.BaseModel):
         return self.url
 
     def isOnline(self) -> Union[bool, None]:
+        """ At least one domain needs to be online so that this item counts as online. """
         offlineCount = 0
         for cr in self.checkResults:
             if cr.isOnline() is True:
@@ -118,7 +122,7 @@ class DomainCheckInfo(pydantic.BaseModel):
             # Some offline, some unchecked -> Unclear status
             return None
 
-    def getStatusText(self) -> str:
+    def getStatusText(self, ignoreWWW: bool = False) -> str:
         onlinestatus = self.isOnline()
         newMainDomain = self.getNewMainDomain()
         includeNewMainDomainInfoInText = True
@@ -162,7 +166,7 @@ class DomainCheckInfo(pydantic.BaseModel):
 
 class URLChecker:
 
-    def __init__(self, timeout: int = 30):
+    def __init__(self, timeout: int = 60):
         self.timeout = timeout
         # TODO: Add functionality
         self.ignoreWWWForDomainComparison = False
@@ -217,7 +221,9 @@ class URLChecker:
             except ReadTimeout:
                 domainCheckResult.problemType = ProblemType.READ_TIMEOUT
             except ConnectError:
-                domainCheckResult.problemType = ProblemType.WTF
+                domainCheckResult.problemType = ProblemType.CONNECT_ERROR
+            finally:
+                domainCheckResult.dateChecked = datetime.now()
             progress += 1
 
     def looksLikeParkedDomain(self, html: str):
@@ -244,10 +250,10 @@ class URLChecker:
 if __name__ == '__main__':
 
     my_parser = argparse.ArgumentParser()
-    my_parser.add_argument('-t', '--timeout', help='Read-Timeout in seconds.', type=int, default=30)
+    my_parser.add_argument('-t', '--timeout', help='Read-Timeout in seconds.', type=int, default=60)
     args = my_parser.parse_args()
     # checker = URLChecker(timeout=args.timeout)
-    checker = URLChecker(timeout=30)
+    checker = URLChecker(timeout=args.timeout)
 
     # URLs und zugehörige Keywords aus der Textdatei lesen
     itemsToCheck = []
@@ -279,12 +285,13 @@ if __name__ == '__main__':
         print("Keine Domains zum prüfen gefunden -> Ende")
         sys.exit()
 
+    print(f'Items to check: {len(itemsToCheck)} | Timeout: {checker.timeout}')
     pos = 0
     with open(results_file, "w") as file:
         for dsi in itemsToCheck:
-            print(f"Arbeite an item {pos + 1} von {len(itemsToCheck)} | {dsi.url}")
+            print(f"Working on item {pos + 1} von {len(itemsToCheck)} | {dsi.url}")
             checker.checkURL(dsi)
-            print(f"--> {dsi.getStatusText()}")
+            print(f"--> {dsi.getStatusText(ignoreWWW=checker.ignoreWWWForDomainComparison)}")
             text = ''
             if pos > 0:
                 text += '\n'
