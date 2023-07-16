@@ -59,6 +59,7 @@ class DomainCheckResult(pydantic.BaseModel):
     # parkedType: Optional[int]
     isMarkerFound: Optional[Union[bool, None]]
     redirectedToDomain: Optional[str]
+
     # preferredProtocol: Optional[str]
 
     def isOnline(self) -> bool:
@@ -246,7 +247,7 @@ if __name__ == '__main__':
     my_parser.add_argument('-t', '--timeout', help='Read-Timeout in seconds.', type=int, default=30)
     args = my_parser.parse_args()
     # checker = URLChecker(timeout=args.timeout)
-    checker = URLChecker(timeout=1)
+    checker = URLChecker(timeout=30)
 
     # URLs und zugehörige Keywords aus der Textdatei lesen
     itemsToCheck = []
