@@ -49,6 +49,12 @@ class ProblemType(Enum):
     # Placeholder
     WTF = 8
 
+class OnlineStatus(Enum):
+    ONLINE = 0
+    OFFLINE = 1
+    UNCHECKABLE = 2
+    UNCHECKED = 3
+
 
 class DomainCheckResult(pydantic.BaseModel):
     # TODO: Add validation for domain / url
@@ -63,11 +69,20 @@ class DomainCheckResult(pydantic.BaseModel):
     # parkedType: Optional[int]
     isMarkerFound: Optional[Union[bool, None]]
     redirectedToDomain: Optional[str]
-
     # preferredProtocol: Optional[str]
 
+    def getOnlineStatus(self) -> OnlineStatus:
+        if self.dateChecked is None:
+            return OnlineStatus.UNCHECKED
+        elif self.problemType is None:
+            return OnlineStatus.ONLINE
+        elif self.problemType == ProblemType.BLOCKED_BY:
+            return OnlineStatus.UNCHECKABLE
+        else:
+            return OnlineStatus.OFFLINE
+
     def isOnline(self) -> bool:
-        if self.problemType is None:
+        if self.getOnlineStatus() == OnlineStatus.ONLINE:
             return True
         else:
             return False
@@ -82,14 +97,20 @@ class DomainCheckResult(pydantic.BaseModel):
             return None
 
     def getFailureReasonStr(self) -> Union[str, None]:
-        problemType = self.problemType
-        if problemType is not None:
-            if problemType == ProblemType.BLOCKED_BY:
+        if self.problemType is not None:
+            if self.problemType == ProblemType.BLOCKED_BY:
                 return f'{self.problemType.name} -> {self.blockedBy}'
             else:
-                return problemType.name
+                return self.problemType.name
         else:
             return None
+
+    def getStatusText(self) -> str:
+        failureText = self.getFailureReasonStr()
+        if failureText is None:
+            return self.getOnlineStatus().name
+        else:
+            return self.getOnlineStatus().name + ' -> ' + failureText
 
 
 class DomainCheckInfo(pydantic.BaseModel):
@@ -102,6 +123,9 @@ class DomainCheckInfo(pydantic.BaseModel):
 
     def __str__(self):
         return f'{self.domains[0]} | {self.getStatusText()}'
+
+    def getMainDomain(self) -> str:
+        return self.domains[0]
 
     def getURL(self) -> str:
         return self.url
@@ -123,19 +147,26 @@ class DomainCheckInfo(pydantic.BaseModel):
             return None
 
     def getStatusText(self, ignoreWWW: bool = False) -> str:
-        onlinestatus = self.isOnline()
-        newMainDomain = self.getNewMainDomain()
-        includeNewMainDomainInfoInText = True
-        if onlinestatus is None:
-            statustext = f'UNCHECKABLE -> {self.getFailureReasonStr()}'
-        elif onlinestatus is True:
-            statustext = 'ONLINE'
+        if len(self.checkResults) == 0:
+            return OnlineStatus.UNCHECKED.name
+        elif len(self.checkResults) == 1:
+            return self.checkResults[0].getStatusText()
         else:
-            statustext = f'OFFLINE -> {self.getFailureReasonStr()}'
-            includeNewMainDomainInfoInText = False
-        if newMainDomain is not None and includeNewMainDomainInfoInText:
-            statustext += f' | NEW_MAIN_DOMAIN: {newMainDomain}'
-        return statustext
+            # Multiple domains
+            # TODO: Review this
+            onlinestatus = self.isOnline()
+            newMainDomain = self.getNewMainDomain()
+            includeNewMainDomainInfoInText = True
+            if onlinestatus is None:
+                statustext = f'UNCHECKABLE -> {self.getFailureReasonStr()}'
+            elif onlinestatus is True:
+                statustext = 'ONLINE'
+            else:
+                statustext = f'OFFLINE -> {self.getFailureReasonStr()}'
+                includeNewMainDomainInfoInText = False
+            if newMainDomain is not None and includeNewMainDomainInfoInText:
+                statustext += f' | NEW_MAIN_DOMAIN: {newMainDomain}'
+            return statustext
 
     def getFailureReasonStr(self) -> Union[str, None]:
         for checkResult in self.checkResults:
@@ -262,25 +293,43 @@ if __name__ == '__main__':
         sys.exit()
     # Parse URLs from textdocument
     with open(url_file, "r") as file:
-        lineNumber = 0
-        for line in file:
-            lineNumber += 1
-            line = line.strip()
-            if line == "":
-                continue
-            keywords = []
-            if ' ' in line:
-                url, keyword = line.split(" ", 1)  # die erste Leerzeichen-getrennte Zeichenkette als URL, den Rest als Keyword nehmen
-                keywords = [keyword]
-            else:
-                url = line
-            domain = regexDomain(url)
-            # TODO: Make one check out of those two
-            if domain is None or not isDomain(domain):
-                print(f'Skipping line number {lineNumber} due to invalid domain: {domain} | Line content: {line}')
-                continue
-            dsi = DomainCheckInfo(url=url, domains=[domain], keywords=keywords)
-            itemsToCheck.append(dsi)
+        fullText = file.read().strip()
+        if fullText.startswith("\"") and ',' in fullText:
+            """ For lists like: "domain1.tld", "domain2.tld", ... """
+            print("Looks like 'Java' comma separated input")
+            fullText = fullText.replace("\"", '')
+            fullText = fullText.replace("\r\n", '')
+            urls = fullText.split(',')
+            for url in urls:
+                url = url.strip()
+                domain = regexDomain(url)
+                # TODO: Make one check out of those two
+                if not isDomain(domain):
+                    print(f'Skipping item {url} due to invalid domain: {domain}')
+                    continue
+                dsi = DomainCheckInfo(url=url, domains=[domain])
+                itemsToCheck.append(dsi)
+        else:
+            file.seek(0)
+            lineNumber = 0
+            for line in file:
+                lineNumber += 1
+                line = line.strip()
+                if line == "":
+                    continue
+                keywords = []
+                if ' ' in line:
+                    url, keyword = line.split(" ", 1)  # die erste Leerzeichen-getrennte Zeichenkette als URL, den Rest als Keyword nehmen
+                    keywords = [keyword]
+                else:
+                    url = line
+                domain = regexDomain(url)
+                # TODO: Make one check out of those two
+                if not isDomain(domain):
+                    print(f'Skipping line number {lineNumber} due to invalid domain: {domain} | Line content: {line}')
+                    continue
+                dsi = DomainCheckInfo(url=url, domains=[domain], keywords=keywords)
+                itemsToCheck.append(dsi)
     if len(itemsToCheck) == 0:
         print("Keine Domains zum prüfen gefunden -> Ende")
         sys.exit()
@@ -299,7 +348,27 @@ if __name__ == '__main__':
             file.write(text)
             pos += 1
 
+    # Write results to json file
     with open('results.json', 'w') as ofile:
         json.dump(itemsToCheck, ofile, default=pydantic_encoder)
+    # Print all online items as Java style Array
+    onlineDomains = []
+    textJavaStyleArray = ""
+    textLineSeparated = ""
+    for item in itemsToCheck:
+        if item.isOnline():
+            if len(textJavaStyleArray) > 0:
+                textJavaStyleArray += ", "
+                textLineSeparated += "\n"
+            textJavaStyleArray += "\"" + item.getMainDomain() + "\""
+            textLineSeparated += item.getMainDomain()
+            onlineDomains.append(item.getMainDomain())
+    if len(textJavaStyleArray) > 0:
+        print('Online domains in Java Array style:')
+        print(textJavaStyleArray)
+        print('Online domains newline separated:')
+        print(textLineSeparated)
+
+
 
     print(f"Testergebnisse wurden in den Dateien {results_file} und results.json gespeichert.")
