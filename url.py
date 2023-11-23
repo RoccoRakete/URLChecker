@@ -13,7 +13,7 @@ import pydantic as pydantic
 import socket
 import time
 
-from httpx import ConnectTimeout, ReadTimeout, ConnectError
+from httpx import ConnectTimeout, ReadTimeout, ConnectError, RemoteProtocolError
 from pydantic.json import pydantic_encoder
 
 # Dateiname der Textdatei mit den URLs und Keywords
@@ -123,6 +123,16 @@ class DomainCheckInfo(pydantic.BaseModel):
 
     def __str__(self):
         return f'{self.domains[0]} | {self.getStatusText()}'
+
+    def __eq__(self, other):
+        if not isinstance(other, DomainCheckInfo):
+            return False
+        if len(self.domains) != len(other.domains):
+            return False
+        for thisdomain in self.domains:
+            if thisdomain not in other.domains:
+                return False
+        return True
 
     def getMainDomain(self) -> str:
         return self.domains[0]
@@ -251,7 +261,7 @@ class URLChecker:
                 domainCheckResult.problemType = ProblemType.CONNECT_TIMEOUT
             except ReadTimeout:
                 domainCheckResult.problemType = ProblemType.READ_TIMEOUT
-            except ConnectError:
+            except(ConnectError, RemoteProtocolError):
                 domainCheckResult.problemType = ProblemType.CONNECT_ERROR
             finally:
                 domainCheckResult.dateChecked = datetime.now()
@@ -262,6 +272,11 @@ class URLChecker:
         if 'sedoparking.com' in html or 'sedoParkingUrl' in html:
             return True
         elif 'window.park' in html and '/js/parking' in html:
+            # TODO: Add information about vendor to this else-if statement
+            return True
+        elif 'dan.com/de-de/orders/checkout' in html:
+            return True
+        elif 'squadhelp.com/name/' in html:
             return True
         else:
             return False
@@ -308,7 +323,8 @@ if __name__ == '__main__':
                     print(f'Skipping item {url} due to invalid domain: {domain}')
                     continue
                 dsi = DomainCheckInfo(url=url, domains=[domain])
-                itemsToCheck.append(dsi)
+                if dsi not in itemsToCheck:
+                    itemsToCheck.append(dsi)
         else:
             file.seek(0)
             lineNumber = 0
@@ -329,7 +345,8 @@ if __name__ == '__main__':
                     print(f'Skipping line number {lineNumber} due to invalid domain: {domain} | Line content: {line}')
                     continue
                 dsi = DomainCheckInfo(url=url, domains=[domain], keywords=keywords)
-                itemsToCheck.append(dsi)
+                if dsi not in itemsToCheck:
+                    itemsToCheck.append(dsi)
     if len(itemsToCheck) == 0:
         print("Keine Domains zum prüfen gefunden -> Ende")
         sys.exit()
