@@ -278,6 +278,18 @@ class URLChecker:
             return True
         elif 'squadhelp.com/name/' in html:
             return True
+        elif '/parking-lander/static' in html:
+            # 2023-11-24 From http://www.afternic.com/forsale/
+            return True
+        elif 'brandforce.com/' in html:
+            # 2023-11-24 From https://www.brandforce.com/domain/domain.tld/
+            return True
+        elif 'broker.xxx/domain-' in html:
+            # 2023-11-24 From https://www.broker.xxx/domain-contact/?domain=domain.tld
+            return True
+        elif 'businessclassdomains.com/' in html:
+            # 2023-11-24 From https://businessclassdomains.com/domain/domain.tld/
+            return True
         else:
             return False
 
